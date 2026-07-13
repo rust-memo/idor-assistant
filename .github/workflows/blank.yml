@@ -1,10 +1,12 @@
-name: Build IDOR Assistant
+  name: Build IDOR Assistant
 
   on:
     push:
-      branches: [main]
+      branches:
+        - main
     pull_request:
-      branches: [main]
+      branches:
+        - main
     workflow_dispatch:
 
   permissions:
@@ -22,7 +24,7 @@ name: Build IDOR Assistant
           uses: actions/setup-java@v5
           with:
             distribution: temurin
-            java-version: '17'
+            java-version: "17"
             cache: gradle
 
         - name: Build and test
