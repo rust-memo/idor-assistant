@@ -31,4 +31,3 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: build/libs/idor-bola-assistant-2.0.0.jar
-          archive: false
