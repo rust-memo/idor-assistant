@@ -10,14 +10,16 @@ class DetectionEngineTest {
 
     @Test void detectsNamedPathJsonGraphqlAndHeaderReferences() {
         var input = new DetectionEngine.Input("PATCH", "https://example.test/api/users/12345/orders/550e8400-e29b-41d4-a716-446655440000",
-                "/api/users/12345/orders/550e8400-e29b-41d4-a716-446655440000", Map.of("X-Tenant-ID", "88"),
+                "/api/users/12345/orders/550e8400-e29b-41d4-a716-446655440000",
+                Map.of("X-Tenant-ID", "88", "X-Object-ID", "901"),
                 List.of(new Reference("account_id", "42", "URL", "")),
                 "{\"documentId\":\"507f1f77bcf86cd799439011\",\"query\":\"query { user(userId: 99) { id } }\"}", "{\"invoice_id\":77}", 200);
         var result = engine.analyze(input).orElseThrow();
         assertEquals("High", result.priority());
         assertTrue(result.references().stream().anyMatch(r -> r.location().equals("Path")));
         assertTrue(result.references().stream().anyMatch(r -> r.location().equals("GraphQL")));
-        assertTrue(result.references().stream().anyMatch(r -> r.location().equals("Header")));
+        assertTrue(result.references().stream().anyMatch(r -> r.name().equals("X-Object-ID") && r.location().equals("Header")));
+        assertTrue(result.references().stream().noneMatch(r -> r.name().equals("X-Tenant-ID")));
         assertEquals("/api/users/{id}/orders/{id}", result.endpointTemplate());
     }
 

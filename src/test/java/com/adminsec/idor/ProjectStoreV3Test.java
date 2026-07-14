@@ -1,6 +1,8 @@
 package com.adminsec.idor;
 
 import burp.api.montoya.persistence.PersistedObject;
+import com.adminsec.idor.model.CandidateRule;
+import com.adminsec.idor.model.Reference;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -17,7 +19,7 @@ class ProjectStoreV3Test {
         store.saveProfiles(List.of(expected)); IdentityProfile loaded = store.loadProfiles().get(0);
         assertEquals(expected.id(), loaded.id()); assertEquals("tenant-a", loaded.role());
         assertEquals(expected.headers(), loaded.headers()); assertEquals(expected.substitutions(), loaded.substitutions());
-        assertEquals("3", backing.strings().get("schemaVersion"));
+        assertEquals("4", backing.strings().get("schemaVersion"));
     }
 
     @Test void legacyProfilesMigrateOnlyWhenPersistenceWasEnabled() {
@@ -40,6 +42,18 @@ class ProjectStoreV3Test {
         assertEquals("Confirmed", store.loadReviewStatus("candidate"));
         assertArrayEquals(new String[]{"Suspicious access", "detail"}, store.loadComparison("candidate"));
         assertArrayEquals(new String[]{"Not tested", ""}, store.loadComparison("missing"));
+    }
+
+    @Test void scopedCandidateRulesRoundTripWithoutIdentifierValues() {
+        Backing backing = backing(); ProjectStore store = new ProjectStore(backing.data());
+        CandidateRule expected = CandidateRule.create(CandidateRule.Action.IGNORE, CandidateRule.Scope.ENDPOINT,
+                "example.test", "GET", "/users/{id}", new Reference("user_id", "secret-value", "URL", "",
+                        "Request", "user_id", "Normal"), "routing identifier");
+        store.saveCandidateRules(List.of(expected));
+        CandidateRule loaded = store.loadCandidateRules().get(0);
+        assertEquals(expected.id(), loaded.id()); assertEquals(expected.scope(), loaded.scope());
+        assertEquals("routing identifier", loaded.reason());
+        assertFalse(backing.strings().get("v4.candidateRules").contains("secret-value"));
     }
 
     private Backing backing() {

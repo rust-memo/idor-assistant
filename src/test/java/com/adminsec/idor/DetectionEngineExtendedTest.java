@@ -1,6 +1,8 @@
 package com.adminsec.idor;
 
 import com.adminsec.idor.model.Reference;
+import com.adminsec.idor.model.CandidateDisposition;
+import com.adminsec.idor.model.CandidateRule;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -26,8 +28,10 @@ class DetectionEngineExtendedTest {
     }
 
     @Test void customAllowDenyAndPathsAreApplied() {
-        engine.configure(List.of("widget"), List.of("owner_id"), List.of("/health"));
+        engine.configure(List.of("widget", "version_id"), List.of("owner_id"), List.of("/health"));
         assertTrue(engine.isIdentifierName("widget")); assertFalse(engine.isIdentifierName("owner_id"));
+        assertEquals(CandidateDisposition.ACTIVE, engine.analyze(input("/api/status",
+                List.of(new Reference("version_id", "2", "URL", "")), "")).orElseThrow().disposition());
         assertTrue(engine.analyze(input("/health/widgets/12", List.of(new Reference("widget", "12", "URL", "")), "")).isEmpty());
     }
 
@@ -48,6 +52,53 @@ class DetectionEngineExtendedTest {
     @Test void malformedStructuredBodiesDoNotFailAnalysis() {
         assertDoesNotThrow(() -> analyze("{not-json", List.of(new Reference("id", "3", "URL", ""))));
         assertDoesNotThrow(() -> analyze("<root><id>", List.of(new Reference("id", "3", "URL", ""))));
+    }
+
+    @Test void identityHeadersAndIdentityCookiesDoNotCreateObjectCandidates() {
+        var headerOnly = new DetectionEngine.Input("GET", "https://example.test/api/status", "/api/status",
+                Map.of("X-User-ID", "42", "X-Tenant-ID", "7"), List.of(), "", "", 200);
+        assertTrue(engine.analyze(headerOnly).isEmpty());
+        assertTrue(engine.analyze(input("/api/status", List.of(new Reference("user_id", "42", "COOKIE", "")), "")).isEmpty());
+    }
+
+    @Test void weakGenericAndListEndpointReferencesAreSuppressed() {
+        var generic = engine.analyze(input("/api/status", List.of(new Reference("id", "123", "URL", "")), "")).orElseThrow();
+        assertEquals(CandidateDisposition.SUPPRESSED, generic.disposition());
+        assertTrue(generic.score() < 55);
+
+        var search = engine.analyze(input("/api/search", List.of(new Reference("widget_id", "12", "URL", "")), "")).orElseThrow();
+        assertEquals(CandidateDisposition.SUPPRESSED, search.disposition());
+        assertTrue(search.reasons().contains("list/search endpoint penalty"));
+    }
+
+    @Test void concreteResourceContextKeepsGenericIdsActive() {
+        var result = engine.analyze(input("/api/users", List.of(new Reference("id", "123", "URL", "")), "")).orElseThrow();
+        assertEquals(CandidateDisposition.ACTIVE, result.disposition());
+        assertTrue(result.score() >= 55);
+    }
+
+    @Test void symbolicGraphqlArgumentsAreNotCandidatesWhenConcreteVariableExists() {
+        String body = "{\"query\":\"query($id: ID!){ user(id: $id){ id } }\",\"variables\":{\"id\":42}}";
+        var result = analyze(body, List.of()).orElseThrow();
+        assertTrue(result.references().stream().noneMatch(ref -> ref.location().equals("GraphQL")));
+        assertTrue(result.references().stream().anyMatch(ref -> ref.structuralPath().equals("$.variables.id") && ref.value().equals("42")));
+    }
+
+    @Test void scopedIgnoreAndAllowRulesAreMetadataOnlyAndAllowWins() {
+        Reference selector = new Reference("id", "123", "URL", "", "Request", "id", "Normal");
+        CandidateRule ignore = CandidateRule.create(CandidateRule.Action.IGNORE, CandidateRule.Scope.ENDPOINT,
+                "example.test", "GET", "/api/users", selector, "known routing id");
+        engine.configureRules(List.of(ignore));
+        var suppressed = engine.analyze(input("/api/users", List.of(selector), "")).orElseThrow();
+        assertEquals(CandidateDisposition.SUPPRESSED, suppressed.disposition());
+        assertEquals("Suppressed by a user rule", suppressed.dispositionReason());
+        assertFalse(ignore.display().contains("123"));
+
+        CandidateRule allow = CandidateRule.create(CandidateRule.Action.ALLOW, CandidateRule.Scope.ENDPOINT,
+                "example.test", "GET", "/api/users", selector, "reviewed object reference");
+        engine.configureRules(List.of(ignore, allow));
+        assertEquals(CandidateDisposition.ACTIVE,
+                engine.analyze(input("/api/users", List.of(selector), "")).orElseThrow().disposition());
     }
 
     private Optional<com.adminsec.idor.model.Assessment> analyze(String body, List<Reference> parameters) {

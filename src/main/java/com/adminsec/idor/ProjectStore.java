@@ -2,12 +2,13 @@ package com.adminsec.idor;
 
 import burp.api.montoya.persistence.PersistedObject;
 import com.google.gson.*;
+import com.adminsec.idor.model.CandidateRule;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 public final class ProjectStore {
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 4;
     private final PersistedObject data;
 
     public ProjectStore(PersistedObject data) { this.data = data; }
@@ -137,6 +138,26 @@ public final class ProjectStore {
     }
     public void saveSetting(String key, String value) { data.setString("setting." + key, value == null ? "" : value); }
     public String loadSetting(String key) { String value = data.getString("setting." + key); return value == null ? "" : value; }
+
+    public void saveCandidateRules(Collection<CandidateRule> rules) {
+        JsonArray rows = new JsonArray();
+        if (rules != null) for (CandidateRule rule : rules) rows.add(new Gson().toJsonTree(rule));
+        data.setString("v4.candidateRules", rows.toString());
+        data.setString("schemaVersion", Integer.toString(SCHEMA_VERSION));
+    }
+
+    public List<CandidateRule> loadCandidateRules() {
+        String raw = data.getString("v4.candidateRules");
+        if (raw == null || raw.isBlank()) return List.of();
+        List<CandidateRule> result = new ArrayList<>();
+        try {
+            for (JsonElement element : JsonParser.parseString(raw).getAsJsonArray()) {
+                CandidateRule rule = new Gson().fromJson(element, CandidateRule.class);
+                if (rule != null) result.add(rule);
+            }
+        } catch (JsonParseException | IllegalStateException ignored) { return List.of(); }
+        return List.copyOf(result);
+    }
     private String safeKey(String value) {
         try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
         catch (Exception e) { throw new IllegalStateException(e); }

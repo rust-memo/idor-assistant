@@ -37,7 +37,33 @@ class CandidateCatalogTest {
         assertEquals(20, candidate.observations().size());
     }
 
+    @Test void keepsSuppressedSeparateAndPromotesRepeatedDistinctIdentifiers() {
+        CandidateCatalog catalog = new CandidateCatalog();
+        Candidate first = suppressedCandidate("https://example.test/widgets/1", "1");
+        Candidate second = suppressedCandidate("https://example.test/widgets/2", "2");
+        catalog.upsert(first, false);
+        assertTrue(catalog.all().isEmpty()); assertEquals(1, catalog.suppressed().size());
+        catalog.upsert(second, false);
+        assertEquals(1, catalog.all().size()); assertTrue(catalog.suppressed().isEmpty());
+        assertTrue(catalog.all().get(0).assessment().reasons().contains("repeated endpoint with distinct observed identifiers"));
+    }
+
+    @Test void userCanSuppressAndRestoreWithoutLosingObservations() {
+        CandidateCatalog catalog = new CandidateCatalog(); Candidate candidate = candidate("https://example.test/users/1", "one");
+        catalog.upsert(candidate, false); catalog.suppress(candidate, "routing identifier");
+        assertTrue(catalog.all().isEmpty()); assertEquals("routing identifier", catalog.suppressed().get(0).assessment().dispositionReason());
+        catalog.restore(candidate);
+        assertEquals(1, catalog.all().size()); assertTrue(catalog.suppressed().isEmpty());
+    }
+
     private Candidate candidate(String url, String body) { return candidate(request("GET", url), body); }
+    private Candidate suppressedCandidate(String url, String id) {
+        var request = request("GET", url);
+        Assessment assessment = new Assessment(45, "Low", "/widgets/{id}",
+                List.of(new Reference("widget_id", id, "Path", "numeric ID")), List.of("weak"),
+                CandidateDisposition.SUPPRESSED, "Insufficient evidence");
+        return new Candidate("weak-key", assessment, message(request, 200, "{}", "application/json"), "New");
+    }
     private Candidate candidate(burp.api.montoya.http.message.requests.HttpRequest request, String body) {
         Assessment assessment = new Assessment(70, "Medium", "/users/{id}",
                 List.of(new Reference("id", request.url().substring(request.url().lastIndexOf('/') + 1), "Path", "numeric ID")), List.of("id"));

@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.1.0
+
+- Added evidence-qualified passive discovery with explicit active and suppressed dispositions.
+- Excluded authentication-context headers/cookies, pagination, telemetry, and symbolic GraphQL variables from normal candidates.
+- Replaced broad path substring scoring with token-aware resource context and added list/search penalties.
+- Added a reviewable Suppressed workspace and promotion after distinct repeated observations.
+- Added reversible endpoint- and host-scoped false-positive/allow rules that never persist raw identifier values.
+- Added regression coverage for common passive-discovery false positives and scoped-rule persistence.
+
 ## 3.0.0
 
 - Replaced fixed Profile A/B slots with multi-profile identity and role management.

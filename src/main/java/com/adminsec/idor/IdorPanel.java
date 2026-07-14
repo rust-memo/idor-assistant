@@ -12,6 +12,7 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.AbstractTableModel;
 import java.awt.*;
+import java.net.URI;
 import java.util.*;
 import java.util.List;
 
@@ -28,6 +29,11 @@ public final class IdorPanel extends JPanel {
 
     private final CandidateModel candidateModel = new CandidateModel();
     private final JTable candidateTable = new JTable(candidateModel);
+    private final CandidateModel suppressedModel = new CandidateModel();
+    private final JTable suppressedTable = new JTable(suppressedModel);
+    private final List<CandidateRule> candidateRules = new ArrayList<>();
+    private final DefaultListModel<CandidateRule> ruleModel = new DefaultListModel<>();
+    private final JList<CandidateRule> ruleList = new JList<>(ruleModel);
     private final ProfileModel profileModel = new ProfileModel();
     private final JTable profileTable = new JTable(profileModel);
     private final JTextField filter = new JTextField(24);
@@ -67,6 +73,7 @@ public final class IdorPanel extends JPanel {
         super(new BorderLayout());
         this.api = api; this.catalog = catalog; this.store = store; this.profiles = profiles;
         this.orchestrator = orchestrator; this.detectionEngine = detectionEngine;
+        candidateRules.addAll(store.loadCandidateRules());
         this.issueReporter = new IssueReporter(api, redaction);
         requestEditor = api.userInterface().createHttpRequestEditor();
         originalEditor = api.userInterface().createHttpResponseEditor();
@@ -93,6 +100,7 @@ public final class IdorPanel extends JPanel {
         workspace.addTab("Profiles", buildProfiles());
         workspace.addTab("Test Matrix", buildMatrix());
         workspace.addTab("Evidence", buildEvidence());
+        workspace.addTab("Suppressed", buildSuppressed());
         workspace.addTab("Settings", buildSettings());
         add(workspace, BorderLayout.CENTER);
     }
@@ -103,6 +111,7 @@ public final class IdorPanel extends JPanel {
         actions.add(new JLabel("Filter:")); actions.add(filter); actions.add(priority); actions.add(workflow);
         actions.add(button("Set status", this::setReviewStatus)); actions.add(button("Compare selected", this::compareSelected));
         actions.add(button("Repeater", this::sendRepeater)); actions.add(button("Export", this::exportReport));
+        actions.add(button("Mark false positive", this::markFalsePositive));
         actions.add(button("Confirm & report", this::reportIssue));
         root.add(actions, BorderLayout.NORTH);
         candidateTable.setAutoCreateRowSorter(true); candidateTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
@@ -117,6 +126,27 @@ public final class IdorPanel extends JPanel {
             public void changedUpdate(DocumentEvent e) { refreshCandidates(); }
         });
         priority.addActionListener(event -> refreshCandidates());
+        return root;
+    }
+
+    private JComponent buildSuppressed() {
+        JPanel root = new JPanel(new BorderLayout());
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        actions.add(new JLabel("Low-evidence and user-suppressed discoveries. No Burp annotations are added."));
+        actions.add(button("Restore / allow", this::restoreSuppressed));
+        root.add(actions, BorderLayout.NORTH);
+        suppressedTable.setAutoCreateRowSorter(true);
+        suppressedTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        suppressedTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        int[] widths = {55, 70, 65, 330, 190, 85, 240, 110, 150, 280};
+        for (int i = 0; i < widths.length; i++) suppressedTable.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
+        suppressedTable.getSelectionModel().addListSelectionListener(event -> {
+            if (!event.getValueIsAdjusting()) {
+                int row = suppressedTable.getSelectedRow();
+                if (row >= 0) showCandidate(suppressedModel.at(suppressedTable.convertRowIndexToModel(row)));
+            }
+        });
+        root.add(new JScrollPane(suppressedTable), BorderLayout.CENTER);
         return root;
     }
 
@@ -171,7 +201,17 @@ public final class IdorPanel extends JPanel {
         addSetting(form, c, "Request body byte limit", requestLimit); addSetting(form, c, "Response body byte limit", responseLimit);
         addSetting(form, c, "Batch request budget", requestBudget); addSetting(form, c, "Delay between requests (ms)", requestDelay);
         c.gridx = 1; c.gridy++; form.add(button("Save settings", this::saveSettings), c);
-        JPanel root = new JPanel(new BorderLayout()); root.add(form, BorderLayout.NORTH);
+        ruleList.setVisibleRowCount(7);
+        ruleList.setCellRenderer(new DefaultListCellRenderer() {
+            @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean selected, boolean focus) {
+                return super.getListCellRendererComponent(list, value instanceof CandidateRule rule ? rule.display() : "", index, selected, focus);
+            }
+        });
+        JPanel rulesPanel = new JPanel(new BorderLayout());
+        rulesPanel.add(new JLabel("Scoped candidate rules (metadata only):"), BorderLayout.NORTH);
+        rulesPanel.add(new JScrollPane(ruleList), BorderLayout.CENTER);
+        rulesPanel.add(button("Remove selected rule", this::removeSelectedRule), BorderLayout.SOUTH);
+        JPanel root = new JPanel(new BorderLayout()); root.add(form, BorderLayout.NORTH); root.add(rulesPanel, BorderLayout.CENTER);
         return root;
     }
 
@@ -258,7 +298,10 @@ public final class IdorPanel extends JPanel {
     }
 
     private void showSelected() {
-        Candidate candidate = selectedCandidate(); if (candidate == null) return;
+        Candidate candidate = selectedCandidate(); if (candidate == null) return; showCandidate(candidate);
+    }
+
+    private void showCandidate(Candidate candidate) {
         requestEditor.setRequest(candidate.message().request());
         if (candidate.message().hasResponse()) originalEditor.setResponse(candidate.message().response());
         if (candidate.control() != null && candidate.control().hasResponse()) controlEditor.setResponse(candidate.control().response());
@@ -332,6 +375,84 @@ public final class IdorPanel extends JPanel {
         }
         catalog.changed();
     }
+
+    private void markFalsePositive() {
+        Candidate candidate = selectedCandidate();
+        if (candidate == null) { message("Select a candidate first."); return; }
+        Optional<Reference> selectedReference = chooseReference(candidate, "Reference to suppress");
+        if (selectedReference.isEmpty()) return;
+        JComboBox<String> scope = new JComboBox<>(new String[]{"This endpoint (recommended)", "This host"});
+        JTextField reason = new JTextField("User-marked false positive", 32);
+        JPanel form = new JPanel(new GridLayout(0, 1));
+        form.add(new JLabel("Rule scope:")); form.add(scope); form.add(new JLabel("Reason:")); form.add(reason);
+        if (JOptionPane.showConfirmDialog(this, form, "Mark false positive", JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.WARNING_MESSAGE) != JOptionPane.OK_OPTION) return;
+        CandidateRule rule = CandidateRule.create(CandidateRule.Action.IGNORE,
+                scope.getSelectedIndex() == 0 ? CandidateRule.Scope.ENDPOINT : CandidateRule.Scope.HOST,
+                candidateHost(candidate), candidate.message().request().method(), candidate.assessment().endpointTemplate(),
+                selectedReference.get(), reason.getText());
+        addRule(rule);
+        candidate.reviewStatus("False positive");
+        store.saveReviewStatus(candidate.key(), "False positive");
+        catalog.applyIgnoreRule(rule);
+        workspace.setSelectedIndex(4);
+    }
+
+    private void restoreSuppressed() {
+        int row = suppressedTable.getSelectedRow();
+        if (row < 0) { message("Select a suppressed candidate first."); return; }
+        Candidate candidate = suppressedModel.at(suppressedTable.convertRowIndexToModel(row));
+        Optional<Reference> selectedReference = chooseReference(candidate, "Reference to restore");
+        if (selectedReference.isEmpty()) return;
+        Reference reference = selectedReference.get();
+        boolean removed = candidateRules.removeIf(rule -> rule.action() == CandidateRule.Action.IGNORE
+                && rule.matches(candidateHost(candidate), candidate.message().request().method(),
+                candidate.assessment().endpointTemplate(), reference));
+        if (!removed) {
+            candidateRules.add(CandidateRule.create(CandidateRule.Action.ALLOW, CandidateRule.Scope.ENDPOINT,
+                    candidateHost(candidate), candidate.message().request().method(), candidate.assessment().endpointTemplate(),
+                    reference, "User-restored candidate"));
+        }
+        persistRules();
+        candidate.reviewStatus("New"); store.saveReviewStatus(candidate.key(), "New");
+        catalog.restore(candidate);
+        workspace.setSelectedIndex(0);
+    }
+
+    private Optional<Reference> chooseReference(Candidate candidate, String title) {
+        List<Reference> refs = candidate.assessment().references().stream()
+                .filter(reference -> "Request".equals(reference.source())).toList();
+        if (refs.isEmpty()) { message("This item has no request reference."); return Optional.empty(); }
+        JComboBox<String> choices = new JComboBox<>(refs.stream()
+                .map(ref -> ref.name() + " @ " + ref.location() + " (" + ref.structuralPath() + ")")
+                .toArray(String[]::new));
+        if (JOptionPane.showConfirmDialog(this, choices, title, JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return Optional.empty();
+        return Optional.of(refs.get(choices.getSelectedIndex()));
+    }
+
+    private void addRule(CandidateRule rule) {
+        candidateRules.removeIf(existing -> existing.action() == rule.action() && existing.display().equals(rule.display()));
+        candidateRules.add(rule); persistRules();
+    }
+
+    private void removeSelectedRule() {
+        CandidateRule selected = ruleList.getSelectedValue();
+        if (selected == null) { message("Select a rule first."); return; }
+        candidateRules.removeIf(rule -> rule.id().equals(selected.id()));
+        persistRules();
+    }
+
+    private void persistRules() {
+        store.saveCandidateRules(candidateRules);
+        detectionEngine.configureRules(candidateRules);
+        ruleModel.clear(); candidateRules.forEach(ruleModel::addElement);
+    }
+
+    private String candidateHost(Candidate candidate) {
+        try { return Optional.ofNullable(URI.create(candidate.message().request().url()).getHost()).orElse(""); }
+        catch (Exception ignored) { return ""; }
+    }
     private void sendRepeater() { Candidate candidate = selectedCandidate(); if (candidate != null) api.repeater().sendToRepeater(candidate.message().request(), "IDOR candidate"); }
 
     private void exportReport() {
@@ -371,10 +492,12 @@ public final class IdorPanel extends JPanel {
 
     public void applySavedRules() {
         detectionEngine.configure(splitRules(allowNames.getText()), splitRules(denyNames.getText()), splitRules(denyPaths.getText()));
+        detectionEngine.configureRules(candidateRules);
         detectionEngine.configureLimits((Integer) requestLimit.getValue(), (Integer) responseLimit.getValue());
         catalog.setMaxCandidates((Integer) candidateLimit.getValue());
         orchestrator.configureVolatileFields(splitRules(volatileFields.getText()));
         orchestrator.configureBatch((Integer) requestBudget.getValue(), ((Integer) requestDelay.getValue()).longValue());
+        ruleModel.clear(); candidateRules.forEach(ruleModel::addElement);
     }
 
     private List<String> splitRules(String text) { return Arrays.stream(text.split(",")).map(String::trim).filter(value -> !value.isBlank()).toList(); }
@@ -389,6 +512,7 @@ public final class IdorPanel extends JPanel {
                         || candidate.assessment().endpointTemplate().toLowerCase(Locale.ROOT).contains(text)
                         || candidate.comparisonStatus().toLowerCase(Locale.ROOT).contains(text)).toList();
         candidateModel.setRows(visible);
+        suppressedModel.setRows(catalog.suppressed());
     }
 
     private Optional<IdentityProfile> selectedProfile(JComboBox<IdentityProfile> combo) { return Optional.ofNullable((IdentityProfile) combo.getSelectedItem()); }
@@ -413,7 +537,9 @@ public final class IdorPanel extends JPanel {
                 case 0 -> candidate.assessment().score(); case 1 -> candidate.assessment().priority();
                 case 2 -> candidate.message().request().method(); case 3 -> displayUrl(candidate.message().request().url());
                 case 4 -> candidate.assessment().endpointTemplate(); case 5 -> candidate.observations().size(); case 6 -> refs;
-                case 7 -> candidate.reviewStatus(); case 8 -> candidate.comparisonStatus(); default -> candidate.comparisonDetail();
+                case 7 -> candidate.reviewStatus(); case 8 -> candidate.comparisonStatus(); default ->
+                        candidate.assessment().disposition() == CandidateDisposition.SUPPRESSED
+                                ? candidate.assessment().dispositionReason() : candidate.comparisonDetail();
             };
         }
     }

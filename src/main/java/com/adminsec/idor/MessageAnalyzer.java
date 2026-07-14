@@ -43,7 +43,7 @@ public final class MessageAnalyzer {
                 .map(r -> r.name().toLowerCase(Locale.ROOT) + "@" + r.location() + ":" + r.structuralPath())
                 .distinct().sorted().collect(Collectors.joining(","));
         String key = request.method() + " " + host + " " + assessment.get().endpointTemplate() + " " + referencePaths;
-        decorate(message, assessment.get());
+        if (assessment.get().disposition() == CandidateDisposition.ACTIVE) decorate(message, assessment.get());
         String ownerProfileId = profiles == null ? "" : profiles.inferOwner(request).map(IdentityProfile::id).orElse("");
         Candidate candidate = new Candidate(key, assessment.get(), message, projectStore.loadReviewStatus(key), ownerProfileId);
         String[] comparison = projectStore.loadComparison(key);

@@ -38,6 +38,9 @@ public final class Candidate {
     public synchronized void updateMessage(HttpRequestResponse value, Assessment latestAssessment) {
         message = value; assessment = latestAssessment; addObservation(value, latestAssessment, "");
     }
+    public synchronized void reclassify(Assessment value) {
+        if (value != null) assessment = value;
+    }
     public synchronized void addObservation(HttpRequestResponse value, Assessment latestAssessment, String ownerProfileId) {
         if (value == null || latestAssessment == null) return;
         String observationId = Integer.toHexString(Objects.hash(value.request().method(), value.request().url(),
