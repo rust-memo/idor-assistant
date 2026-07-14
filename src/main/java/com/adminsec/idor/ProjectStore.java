@@ -1,11 +1,13 @@
 package com.adminsec.idor;
 
 import burp.api.montoya.persistence.PersistedObject;
+import com.google.gson.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 public final class ProjectStore {
+    public static final int SCHEMA_VERSION = 3;
     private final PersistedObject data;
 
     public ProjectStore(PersistedObject data) { this.data = data; }
@@ -39,6 +41,79 @@ public final class ProjectStore {
     }
 
     public void clearProfile(String slot) { data.deleteString("profile." + slot); data.deleteString("profileName." + slot); }
+
+    public void saveProfiles(Collection<IdentityProfile> profiles) {
+        Base64.Encoder b64 = Base64.getEncoder();
+        JsonArray rows = new JsonArray();
+        for (IdentityProfile profile : profiles) {
+            JsonObject row = new JsonObject();
+            row.addProperty("id", profile.id()); row.addProperty("name", profile.name()); row.addProperty("role", profile.role());
+            JsonArray headers = new JsonArray();
+            profile.headers().forEach((name, value) -> {
+                JsonObject header = new JsonObject();
+                header.addProperty("name", b64.encodeToString(name.getBytes(StandardCharsets.UTF_8)));
+                header.addProperty("value", b64.encodeToString(value.getBytes(StandardCharsets.UTF_8)));
+                headers.add(header);
+            });
+            row.add("headers", headers);
+            JsonArray substitutions = new JsonArray();
+            profile.substitutions().forEach(value -> {
+                JsonObject substitution = new JsonObject(); substitution.addProperty("location", value.location().name());
+                substitution.addProperty("name", b64.encodeToString(value.name().getBytes(StandardCharsets.UTF_8)));
+                substitution.addProperty("value", b64.encodeToString(value.value().getBytes(StandardCharsets.UTF_8)));
+                substitutions.add(substitution);
+            });
+            row.add("substitutions", substitutions); rows.add(row);
+        }
+        data.setString("v3.profiles", rows.toString());
+        data.setString("schemaVersion", Integer.toString(SCHEMA_VERSION));
+    }
+
+    public List<IdentityProfile> loadProfiles() {
+        String raw = data.getString("v3.profiles");
+        if (raw == null || raw.isBlank()) return migrateLegacyProfiles();
+        List<IdentityProfile> result = new ArrayList<>();
+        Base64.Decoder b64 = Base64.getDecoder();
+        try {
+            for (JsonElement element : JsonParser.parseString(raw).getAsJsonArray()) {
+                JsonObject row = element.getAsJsonObject(); Map<String, String> headers = new LinkedHashMap<>();
+                for (JsonElement value : row.getAsJsonArray("headers")) {
+                    JsonObject header = value.getAsJsonObject(); headers.put(decode(b64, header.get("name")), decode(b64, header.get("value")));
+                }
+                List<SessionSubstitution> substitutions = new ArrayList<>();
+                JsonArray stored = row.has("substitutions") ? row.getAsJsonArray("substitutions") : new JsonArray();
+                for (JsonElement value : stored) {
+                    JsonObject substitution = value.getAsJsonObject();
+                    substitutions.add(SessionSubstitution.from(substitution.get("location").getAsString(),
+                            decode(b64, substitution.get("name")), decode(b64, substitution.get("value"))));
+                }
+                String role = row.has("role") ? row.get("role").getAsString() : "";
+                result.add(new IdentityProfile(row.get("id").getAsString(), row.get("name").getAsString(), role,
+                        headers, substitutions, IdentityProfile.fingerprint(headers, substitutions)));
+            }
+        } catch (Exception ignored) { return List.of(); }
+        return List.copyOf(result);
+    }
+
+    public void clearProfiles() { data.deleteString("v3.profiles"); clearProfile("A"); clearProfile("B"); }
+
+    private List<IdentityProfile> migrateLegacyProfiles() {
+        if (!Boolean.parseBoolean(loadSetting("persistProfiles"))) return List.of();
+        List<IdentityProfile> migrated = new ArrayList<>();
+        for (String slot : List.of("A", "B")) {
+            IdentityProfile legacy = loadProfile(slot);
+            if (!legacy.headers().isEmpty()) migrated.add(new IdentityProfile(UUID.randomUUID().toString(),
+                    legacy.name(), "Legacy profile " + slot, legacy.headers(), List.of(), legacy.fingerprint()));
+        }
+        if (!migrated.isEmpty()) {
+            saveProfiles(migrated); clearProfile("A"); clearProfile("B");
+        }
+        return List.copyOf(migrated);
+    }
+
+    private String decode(Base64.Decoder decoder, JsonElement value) {
+        return new String(decoder.decode(value.getAsString()), StandardCharsets.UTF_8);
+    }
 
     public void saveReviewed(String candidateKey, boolean reviewed) { saveReviewStatus(candidateKey, reviewed ? "Reviewed" : "New"); }
     public boolean isReviewed(String candidateKey) { return !"New".equals(loadReviewStatus(candidateKey)); }

@@ -11,7 +11,8 @@ public final class ResponseComparator {
             "timestamp", "time", "date", "nonce", "request_id", "requestid", "trace_id", "traceid", "correlation_id");
     private static final Pattern VOLATILE_TEXT = Pattern.compile("(?i)(\"(?:timestamp|time|date|nonce|request_?id|trace_?id)\"\\s*:\\s*)\"?[^\",}]+\"?");
     private static final Pattern DENIED = Pattern.compile("(?i)\\b(unauthori[sz]ed|forbidden|access denied|permission denied|not allowed|login required)\\b");
-    private static final Pattern SESSION = Pattern.compile("(?i)\\b(csrf|xsrf|nonce|invalid token|expired token|session expired|token expired)\\b");
+    private static final Pattern SESSION = Pattern.compile("(?i)\\b(?:invalid|expired|missing|required|failed)\\s+(?:csrf|xsrf|nonce|token|session)\\b|"
+            + "\\b(?:csrf|xsrf|nonce|token|session)(?:\\s+token)?\\s+(?:is\\s+)?(?:invalid|expired|missing|required|failed)\\b");
     private static final Pattern LOGIN = Pattern.compile("(?i)(<form[^>]+(?:login|signin)|name=[\"']?(?:password|passwd)|/login|sign[ -]?in)");
     private static final Pattern WAF = Pattern.compile("(?i)\\b(web application firewall|cloudflare|akamai|imperva|request blocked|security policy)\\b");
 
@@ -107,7 +108,19 @@ public final class ResponseComparator {
             for (String value : entry.getValue())
                 if (other.contains(value) && (expectedValues.isEmpty() || expectedValues.contains(value))) return true;
         }
+        for (Reference reference : expected) {
+            if (!"Request".equals(reference.source()) || reference.value() == null || reference.value().isBlank()) continue;
+            if (textualIdentity(baseline, reference) && textualIdentity(cross, reference)) return true;
+        }
         return false;
+    }
+
+    private boolean textualIdentity(String body, Reference reference) {
+        if (body == null) return false;
+        String name = Pattern.quote(reference.name()); String value = Pattern.quote(reference.value());
+        Pattern contextual = Pattern.compile("(?is)(?:[<\"']" + name + "[>\"']\\s*[:=]?\\s*[\"']?" + value
+                + "(?:[<\"'\\s,}])|" + name + "\\s*=\\s*[\"']" + value + "[\"'])");
+        return contextual.matcher(body).find();
     }
 
     private Map<String, Set<String>> identityValues(String body) {

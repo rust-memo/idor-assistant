@@ -1,99 +1,96 @@
 # IDOR/BOLA Assistant for Burp Suite
 
-IDOR/BOLA Assistant is a Montoya-based Burp Suite extension that helps authorized testers find object-reference candidates, compare access between two test accounts, and document the result without claiming a vulnerability from passive evidence alone.
+IDOR/BOLA Assistant is an evidence-driven access-control workbench built on Burp's Montoya API. It discovers object references passively, associates observed objects with captured test identities, and runs controlled owner-versus-other-identity comparisons without treating passive evidence as a vulnerability.
 
-The passive analyzer never sends requests. Account and anonymous comparisons run only after a user action, and the extension blocks active comparisons outside Burp Target Scope.
+Passive discovery never sends requests. Batch testing is restricted to `GET` and `HEAD`, every active request must remain in Burp Target Scope, and state-changing requests require a separate manual confirmation.
 
-## Features
+## Highlights in v3
 
-- Reviews recent Proxy history and new Proxy responses for identifiers in URL, form, JSON, XML, multipart, headers, and paths.
-- Scores and prioritizes candidates while keeping passive observations separate from confirmed findings.
-- Captures selected authentication headers as Profile A and Profile B from Burp's context menu.
-- Compares an owner control response with a cross-account response for `GET` and `HEAD` requests.
-- Sends only the cross-account request for state-changing methods, after an explicit warning, to avoid repeating the owner-side action.
-- Supports a separately confirmed anonymous-access comparison.
-- Compares status codes, normalized bodies, JSON structure, sensitive fields, login responses, and selected volatile JSON fields.
-- Sends collected evidence to Repeater or Comparer for manual investigation.
-- Saves review states and comparison summaries in the Burp project.
-- Exports metadata-only HTML, JSON, and CSV reports without authentication headers, query values, or message bodies.
+- Manages any number of identity profiles with role or tenant labels.
+- Captures selected authentication headers and session-bound CSRF/XSRF values.
+- Keeps profiles in memory by default. Optional Burp-project persistence requires an explicit warning acknowledgement.
+- Retains up to 20 distinct observations per endpoint/reference instead of replacing them with the latest request.
+- Infers an observation's owner when its captured authentication matches exactly one profile.
+- Detects observed references in paths, URL/form parameters, JSON, GraphQL variables and inline arguments, XML elements and attributes, multipart data, cookies, and allowlisted headers.
+- Uses observed IDs only. It does not guess adjacent values, enumerate identifiers, or brute-force objects.
+- Compares status, content type, authentication barriers, redirects, normalized JSON/XML/HTML, object identity, sensitive fields, and owner-baseline stability.
+- Runs sequential read-only matrices with a default budget of 20 HTTP requests and a 250 ms delay.
+- Stops Batch on rate limiting, repeated session failures, cancellation, unload, or a Scope violation.
+- Creates a redacted Burp Site Map Audit Issue only after **Confirm & report** is pressed.
+- Exports metadata by default, with optional bounded and redacted evidence snippets. Raw HTTP export is intentionally unavailable.
 
-Candidates are review leads, not proof of IDOR/BOLA. Confirm ownership, authorization rules, and actual server-side impact manually.
+Candidates and automated comparisons are review leads. Always confirm ownership, authorization rules, and real impact manually.
 
-## Requirements
+## Requirements and build
 
 - A current Burp Suite Community or Professional release compatible with Montoya API 2026.4.
-- JDK 17 or newer to build the extension.
-
-## Build
-
-The repository includes a Gradle wrapper, so a separate Gradle installation is not required.
+- JDK 17 or newer.
 
 Linux or macOS:
 
 ```bash
-./gradlew clean test jar
+./gradlew clean check jar
 ```
 
 Windows:
 
 ```powershell
-.\gradlew.bat clean test jar
+.\gradlew.bat clean check jar
 ```
 
-The loadable JAR is created at:
+The loadable extension is:
 
 ```text
-build/libs/idor-bola-assistant-2.0.0.jar
+build/libs/idor-bola-assistant-3.0.0.jar
 ```
 
-Do not load a plain source archive into Burp. Build the project or download the JAR from a trusted GitHub release or workflow artifact.
+`check` runs the test suite and enforces at least 80% line coverage for the non-UI core. GitHub Actions builds on Linux, macOS, and Windows and uploads the Linux JAR.
 
-GitHub Actions runs all tests and publishes the JAR as a directly downloadable workflow artifact. For public distribution, attach that tested file to a versioned GitHub Release instead of committing `build/`.
+## Install
 
-## Install in Burp Suite
+1. Open **Extensions > Installed** in Burp Suite.
+2. Click **Add**, choose **Java**, and select `idor-bola-assistant-3.0.0.jar`.
+3. Add only authorized targets to **Target > Scope**.
+4. Open the **IDOR Assistant** suite tab.
 
-1. Open **Extensions > Installed**.
-2. Click **Add** and choose extension type **Java**.
-3. Select `build/libs/idor-bola-assistant-2.0.0.jar`.
-4. Check Burp's **Output** and **Errors** tabs, then open the new **IDOR Assistant** tab.
-5. Add only authorized targets to **Target > Scope** before using comparisons.
+## Recommended workflow
 
-## Suggested workflow
+1. Proxy normal traffic from dedicated test accounts and roles. Discovery populates **Dashboard** without sending traffic.
+2. Right-click a trusted authenticated request and select **IDOR Assistant > Capture as new identity profile**. Name the profile and add a role or tenant label.
+3. Repeat for each test identity. The extension associates existing and future observations when their captured authentication matches a profile.
+4. Select candidates in **Dashboard**, then choose the owner and target identities in **Test Matrix**.
+5. Use **Compare one** for a single request, or **Run selected as Batch** for selected `GET/HEAD` candidates. Batch uses only object IDs already observed in Proxy traffic.
+6. Review the original, owner-control, and cross-identity messages under **Evidence**.
+7. Set the workflow status. Use **Confirm & report** only after manual validation; the Site Map issue contains redacted evidence.
+8. Export HTML, JSON, or CSV metadata. Enable redacted snippets only when the report genuinely needs them.
 
-1. Proxy normal traffic for test accounts A and B. Passive discovery will populate the candidate list.
-2. Right-click a trusted authenticated request for each account and choose **IDOR Assistant > Capture authentication as Profile A/B**.
-3. Select only the authentication headers that should be copied. Profiles stay in memory unless project persistence is explicitly enabled under **Profiles**.
-4. Select a candidate and set which profile owns the referenced object.
-5. For a safe read request, click **Compare accounts**. For a mutation, read and accept the warning only when a cross-account request is safe and authorized.
-6. Review the original, owner-control, and other-account responses. Use **Comparer** or **Repeater** when additional manual checks are needed.
-7. Record a workflow status such as Reviewed, Confirmed, False positive, or Retest, then export a report.
+## Profiles and session values
 
-## Safety and privacy
+Profiles can contain selected authentication headers and detected CSRF/XSRF parameters. Applying a profile removes known authentication material from the source request, adds the selected profile headers, and updates matching session parameters by location.
 
-- Target Scope is a hard boundary for active comparisons.
-- Passive analysis does not mutate identifiers, enumerate values, or send traffic.
-- Authentication profiles are memory-only by default. Optional persistence stores them inside the Burp project and can be cleared from the extension.
-- `POST`, `PUT`, `PATCH`, `DELETE`, and other non-read methods can change data. The extension asks for confirmation and sends at most the cross-account request during an account comparison.
-- Reports intentionally exclude authentication material, HTTP bodies, and query values.
-- Use dedicated test accounts and only test systems for which you have explicit authorization.
+Profiles are memory-only by default. If persistence is enabled, authentication material is stored inside the Burp project and is not encrypted by this extension. v2 Profile A/B data is migrated once when legacy persistence was enabled.
 
-## Limitations
+## Detection and comparison boundaries
 
-- Similar responses do not by themselves prove unauthorized access; applications often return generic or cached content.
-- Different responses do not prove protection; resource state and account-specific presentation may legitimately differ.
-- The extension does not guess object identifiers or automatically change a request's object reference.
-- Binary and highly custom payloads may require manual analysis.
+- Request and response analysis is size- and depth-bounded. XML parsing disables DTD and external entities.
+- Query values and raw reference values are masked in tables and excluded from reports.
+- Similar successful responses are not considered suspicious unless object-identity evidence is present.
+- Login pages, redirects, WAF responses, rate limits, and CSRF/session failures remain inconclusive.
+- An unstable owner baseline reduces the result to inconclusive.
+- Mutation methods are excluded from Batch. A single mutation comparison sends only the cross-identity request after a warning; it does not repeat the owner mutation.
+- The extension never registers an automatic Audit Check and never creates a Site Map issue without manual confirmation.
 
 ## الاستخدام السريع بالعربية
 
-1. ابنِ الإضافة بالأمر `./gradlew clean test jar`، ثم حمّل `build/libs/idor-bola-assistant-2.0.0.jar` كإضافة **Java**.
+1. ابنِ الإضافة باستخدام `./gradlew clean check jar` وحمّل `build/libs/idor-bola-assistant-3.0.0.jar` كإضافة Java.
 2. أضف الهدف المصرح به إلى **Target Scope**.
-3. مرّر ترافيك الحسابين التجريبيين A وB عبر Proxy.
-4. اضغط بالزر الأيمن على طلب موثوق لكل حساب واختر **Capture authentication as Profile A/B**.
-5. اختر المرشح وحدد الحساب المالك، ثم استخدم **Compare accounts**. طلبات التعديل تحتاج تأكيدًا وقد تغيّر البيانات.
-6. راجع الردود يدويًا؛ نتيجة المقارنة إرشاد وليست إثباتًا تلقائيًا للثغرة.
-7. بيانات المصادقة لا تُحفظ افتراضيًا، والتقارير لا تصدرها ولا تصدر محتوى الطلبات والردود.
+3. مرّر ترافيك حسابات الاختبار عبر Proxy؛ الاكتشاف السلبي لا يرسل أي طلبات.
+4. اضغط بالزر الأيمن على Request موثوق واختر **Capture as new identity profile**، ثم اكتب اسم الحساب والدور أو الـtenant.
+5. حدد Candidates والحساب المالك والحسابات الأخرى من **Test Matrix**. الـBatch يعمل فقط مع `GET/HEAD` وبحد افتراضي 20 طلبًا.
+6. الإضافة تستخدم IDs شوهدت بالفعل فقط، ولا تخمّن أو تعمل enumeration.
+7. راجع الأدلة يدويًا، ثم استخدم **Confirm & report** إذا تأكدت من النتيجة.
+8. بيانات المصادقة لا تُحفظ افتراضيًا، والتقارير تحذفها وتحجب query values وObject IDs.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Runtime dependency notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT. See [LICENSE](LICENSE). Runtime dependency notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

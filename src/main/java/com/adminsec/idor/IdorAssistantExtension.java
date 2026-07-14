@@ -16,10 +16,11 @@ import static burp.api.montoya.proxy.http.ProxyResponseToBeSentAction.continueWi
 
 public final class IdorAssistantExtension implements BurpExtension {
     private MontoyaApi api;
-    private CandidateRepository repository;
+    private CandidateCatalog catalog;
     private ProjectStore store;
+    private ProfileManager profiles;
     private MessageAnalyzer analyzer;
-    private ComparisonService comparison;
+    private ComparisonOrchestrator orchestrator;
     private IdorPanel panel;
     private volatile Thread historyScanner;
 
@@ -27,18 +28,19 @@ public final class IdorAssistantExtension implements BurpExtension {
         this.api = api;
         api.extension().setName("IDOR/BOLA Assistant");
         store = new ProjectStore(api.persistence().extensionData());
-        repository = new CandidateRepository();
+        profiles = new ProfileManager(store);
+        catalog = new CandidateCatalog();
         DetectionEngine detectionEngine = new DetectionEngine();
-        analyzer = new MessageAnalyzer(detectionEngine, store);
-        comparison = new ComparisonService(api);
-        panel = new IdorPanel(api, repository, store, comparison, detectionEngine);
+        analyzer = new MessageAnalyzer(detectionEngine, store, profiles);
+        orchestrator = new ComparisonOrchestrator(api.http()::sendRequest, request -> request.isInScope());
+        panel = new IdorPanel(api, catalog, store, profiles, orchestrator, detectionEngine);
         panel.applySavedRules();
         api.userInterface().applyThemeToComponent(panel);
         api.userInterface().registerSuiteTab("IDOR Assistant", panel);
         api.userInterface().registerContextMenuItemsProvider(new ProfileMenu());
         api.proxy().registerResponseHandler(new LiveProxyHandler());
         api.extension().registerUnloadingHandler(() -> {
-            comparison.close();
+            orchestrator.close();
             Thread scanner = historyScanner;
             if (scanner != null) scanner.interrupt();
         });
@@ -56,11 +58,11 @@ public final class IdorAssistantExtension implements BurpExtension {
                 if (Thread.currentThread().isInterrupted()) return;
                 if (item.hasResponse()) {
                     try { analyzer.analyze(httpRequestResponse(item.finalRequest(), item.response(), item.annotations()))
-                            .ifPresent(c -> repository.upsert(c, false)); }
+                            .ifPresent(c -> catalog.upsert(c, false)); }
                     catch (Exception e) { api.logging().logToError("IDOR history item analysis failed", e); }
                 }
             }
-            repository.changed();
+            catalog.changed();
             api.logging().logToOutput("IDOR history scan finished: " + inspected.size() + " of " + history.size() + " items inspected.");
         } catch (Exception e) { api.logging().logToError("IDOR history scan failed", e); }
     }
@@ -71,7 +73,7 @@ public final class IdorAssistantExtension implements BurpExtension {
     }
 
     private void accept(HttpRequestResponse message) {
-        try { analyzer.analyze(message).ifPresent(repository::upsert); }
+        try { analyzer.analyze(message).ifPresent(catalog::upsert); }
         catch (Exception e) { api.logging().logToError("IDOR message analysis failed", e); }
     }
 
@@ -90,11 +92,9 @@ public final class IdorAssistantExtension implements BurpExtension {
             Optional<HttpRequestResponse> selected = selectedMessage(event);
             if (selected.isEmpty()) return List.of();
             JMenu root = new JMenu("IDOR Assistant");
-            JMenuItem a = new JMenuItem("Capture authentication as Profile A");
-            JMenuItem b = new JMenuItem("Capture authentication as Profile B");
-            a.addActionListener(e -> panel.capture("A", selected.get()));
-            b.addActionListener(e -> panel.capture("B", selected.get()));
-            root.add(a); root.add(b);
+            JMenuItem capture = new JMenuItem("Capture as new identity profile");
+            capture.addActionListener(e -> panel.capture(selected.get()));
+            root.add(capture);
             return List.of(root);
         }
 

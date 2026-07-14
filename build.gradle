@@ -1,7 +1,10 @@
-plugins { id 'java' }
+plugins {
+    id 'java'
+    id 'jacoco'
+}
 
 group = 'com.adminsec'
-version = '2.0.0'
+version = '3.0.0'
 
 repositories { mavenCentral() }
 
@@ -10,6 +13,7 @@ dependencies {
     implementation 'com.google.code.gson:gson:2.11.0'
     testImplementation 'net.portswigger.burp.extensions:montoya-api:2026.4'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.mockito:mockito-core:5.23.0'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
@@ -22,7 +26,43 @@ tasks.withType(JavaCompile).configureEach {
     options.release = 17
 }
 
-test { useJUnitPlatform() }
+test {
+    useJUnitPlatform()
+    finalizedBy jacocoTestReport
+}
+
+jacoco { toolVersion = '0.8.15' }
+
+def coverageExcludes = [
+        '**/IdorPanel*', '**/IdorAssistantExtension*', '**/MessageAnalyzer*',
+        '**/IssueReporter*', '**/ProjectStore*'
+]
+
+jacocoTestReport {
+    dependsOn test
+    reports { xml.required = true; html.required = true }
+    classDirectories.setFrom(files(classDirectories.files.collect {
+        fileTree(dir: it, exclude: coverageExcludes)
+    }))
+}
+
+jacocoTestCoverageVerification {
+    dependsOn test
+    classDirectories.setFrom(files(classDirectories.files.collect {
+        fileTree(dir: it, exclude: coverageExcludes)
+    }))
+    violationRules {
+        rule {
+            limit {
+                counter = 'LINE'
+                value = 'COVEREDRATIO'
+                minimum = 0.80
+            }
+        }
+    }
+}
+
+check.dependsOn jacocoTestCoverageVerification
 
 jar {
     archiveBaseName = 'idor-bola-assistant'

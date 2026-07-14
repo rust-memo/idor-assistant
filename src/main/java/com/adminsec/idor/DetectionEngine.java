@@ -6,6 +6,8 @@ import com.adminsec.idor.model.Reference;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.xml.stream.*;
+import java.io.StringReader;
 
 public final class DetectionEngine {
     private final JsonInspector json = new JsonInspector();
@@ -84,6 +86,7 @@ public final class DetectionEngine {
         }
         collectPath(path, refs);
         collectBody(input.body(), refs);
+        collectXml(input.body(), refs);
         refs = deduplicate(refs);
         if (refs.isEmpty()) return Optional.empty();
         int requestReferenceCount = refs.size();
@@ -166,6 +169,39 @@ public final class DetectionEngine {
             refs.add(new Reference(gql.group(1), value, "GraphQL", shape(value), "Request",
                     "graphql." + gql.group(1), JsonInspector.sensitivity(gql.group(1))));
         }
+    }
+
+    private void collectXml(String body, List<Reference> refs) {
+        if (body == null || body.length() > maxRequestBody || !body.stripLeading().startsWith("<")) return;
+        try {
+            XMLInputFactory factory = XMLInputFactory.newFactory();
+            factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+            factory.setProperty("javax.xml.stream.isSupportingExternalEntities", false);
+            XMLStreamReader reader = factory.createXMLStreamReader(new StringReader(body));
+            Deque<String> path = new ArrayDeque<>();
+            Deque<StringBuilder> text = new ArrayDeque<>();
+            while (reader.hasNext() && refs.size() < 2_000) {
+                int event = reader.next();
+                if (event == XMLStreamConstants.START_ELEMENT) {
+                    String element = reader.getLocalName(); path.addLast(element); text.addLast(new StringBuilder());
+                    String structuralPath = "$./" + String.join("/", path);
+                    for (int i = 0; i < reader.getAttributeCount(); i++) {
+                        String name = reader.getAttributeLocalName(i); String value = reader.getAttributeValue(i);
+                        if (isIdentifierName(name)) refs.add(new Reference(name, value, "XML_ATTRIBUTE", shape(value),
+                                "Request", structuralPath + "/@" + name, JsonInspector.sensitivity(name)));
+                    }
+                } else if ((event == XMLStreamConstants.CHARACTERS || event == XMLStreamConstants.CDATA) && !text.isEmpty()) {
+                    if (text.getLast().length() < 257) text.getLast().append(reader.getText());
+                } else if (event == XMLStreamConstants.END_ELEMENT && !path.isEmpty()) {
+                    String name = path.getLast(); String value = text.removeLast().toString().trim();
+                    if (isIdentifierName(name) && !value.isBlank() && value.length() <= 256)
+                        refs.add(new Reference(name, value, "XML", shape(value), "Request",
+                                "$./" + String.join("/", path), JsonInspector.sensitivity(name)));
+                    path.removeLast();
+                }
+            }
+            reader.close();
+        } catch (XMLStreamException | IllegalArgumentException ignored) { }
     }
 
     private void collectResponseReferences(String body, List<Reference> refs) {
